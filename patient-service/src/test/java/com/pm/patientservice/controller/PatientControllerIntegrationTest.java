@@ -2,8 +2,12 @@ package com.pm.patientservice.controller;
 
 import com.pm.patientservice.model.Patient;
 import com.pm.patientservice.repository.PatientRepository;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -11,7 +15,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.Key;
 import java.time.LocalDate;
+import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -29,6 +37,20 @@ class PatientControllerIntegrationTest {
     @Autowired
     private PatientRepository patientRepository;
 
+    @Value("${jwt.secret}")
+    private String jwtSecret;
+
+    private String generateTestToken(String role) {
+        Key key = Keys.hmacShaKeyFor(jwtSecret.getBytes(StandardCharsets.UTF_8));
+        return Jwts.builder()
+                .setSubject("testuser")
+                .claim("roles", List.of(role))
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 86400000L))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+    }
+
     private Patient savedPatient(String name, String email) {
         Patient p = new Patient();
         p.setName(name);
@@ -45,7 +67,8 @@ class PatientControllerIntegrationTest {
     void getAllPatients_shouldReturn200WithList() throws Exception {
         savedPatient("John Doe", "john.doe@example.com");
 
-        mockMvc.perform(get("/api/v1/patients"))
+        mockMvc.perform(get("/api/v1/patients")
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$.length()").value(1));
@@ -57,14 +80,16 @@ class PatientControllerIntegrationTest {
     void getPatientById_shouldReturn200_whenPatientExists() throws Exception {
         Patient saved = savedPatient("John Doe", "john.doe@example.com");
 
-        mockMvc.perform(get("/api/v1/patients/{id}", saved.getId()))
+        mockMvc.perform(get("/api/v1/patients/{id}", saved.getId())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.email").value("john.doe@example.com"));
     }
 
     @Test
     void getPatientById_shouldReturn404_whenPatientDoesNotExist() throws Exception {
-        mockMvc.perform(get("/api/v1/patients/{id}", UUID.randomUUID()))
+        mockMvc.perform(get("/api/v1/patients/{id}", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN")))
                 .andExpect(status().isNotFound());
     }
 
@@ -83,6 +108,7 @@ class PatientControllerIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/v1/patients")
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
@@ -102,6 +128,7 @@ class PatientControllerIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/v1/patients")
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -122,6 +149,7 @@ class PatientControllerIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/v1/patients")
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -143,6 +171,7 @@ class PatientControllerIntegrationTest {
                 """;
 
         mockMvc.perform(put("/api/v1/patients/{id}", saved.getId())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -161,6 +190,7 @@ class PatientControllerIntegrationTest {
                 """;
 
         mockMvc.perform(put("/api/v1/patients/{id}", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isNotFound());
@@ -172,13 +202,24 @@ class PatientControllerIntegrationTest {
     void deletePatient_shouldReturn204_whenPatientExists() throws Exception {
         Patient saved = savedPatient("John Doe", "john.doe@example.com");
 
-        mockMvc.perform(delete("/api/v1/patients/{id}", saved.getId()))
+        mockMvc.perform(delete("/api/v1/patients/{id}", saved.getId())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN")))
                 .andExpect(status().isNoContent());
     }
 
     @Test
     void deletePatient_shouldReturn404_whenPatientDoesNotExist() throws Exception {
-        mockMvc.perform(delete("/api/v1/patients/{id}", UUID.randomUUID()))
+        mockMvc.perform(delete("/api/v1/patients/{id}", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_ADMIN")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void deletePatient_shouldReturn403_whenRoleIsDoctor() throws Exception {
+        Patient saved = savedPatient("John Doe", "john.doe@example.com");
+
+        mockMvc.perform(delete("/api/v1/patients/{id}", saved.getId())
+                        .header("Authorization", "Bearer " + generateTestToken("ROLE_DOCTOR")))
+                .andExpect(status().isForbidden());
     }
 }

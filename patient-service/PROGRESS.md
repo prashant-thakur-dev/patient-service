@@ -4,7 +4,7 @@
 
 A **Spring Boot microservice** for managing patient records, part of a larger microservices architecture.
 
-- **Tech Stack:** Java 21, Spring Boot 4.0.0, Spring Data JPA, PostgreSQL (prod), H2 (dev), Lombok, Bean Validation, springdoc-openapi 2.8.6, Actuator, Spring Cloud 2025.0.0
+- **Tech Stack:** Java 21, Spring Boot 4.0.0, Spring Data JPA, PostgreSQL (prod), H2 (dev), Lombok, Bean Validation, springdoc-openapi 2.8.6, Actuator, Spring Cloud 2025.0.0, Spring Security + JJWT 0.11.5
 - **Base URL (local):** `http://localhost:4000/api/v1/patients`
 - **Base URL (via Gateway):** `http://localhost:4004/api/v1/patients`
 - **Group ID / Artifact:** `com.pm` / `patient-service`
@@ -143,6 +143,45 @@ Switch profile at runtime: `--spring.profiles.active=prod`
 - `application.yml` — added `eureka.client.service-url.defaultZone` + `prefer-ip-address: true`
 - In Docker: `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka-server:8761/eureka/`
 
+### 17. JWT Authentication & Role-Based Access Control
+**Dependencies added to `pom.xml`:**
+- `spring-boot-starter-security`
+- `jjwt-api:0.11.5`, `jjwt-impl:0.11.5` (runtime), `jjwt-jackson:0.11.5` (runtime)
+
+**`application.yml`** — JWT config added:
+```yaml
+jwt:
+  secret: ${JWT_SECRET:default-secret-key-change-in-production-min-32-chars}
+  expiration: 86400000
+```
+
+**New classes in `com.pm.patientservice.security`:**
+
+| Class | Role |
+|---|---|
+| `JwtUtil` | Builds signing key from injected secret; `validateToken()` → `Claims`; `extractUsername()`; `extractRoles()` |
+| `JwtAuthenticationFilter` | `OncePerRequestFilter`; strips `Bearer ` prefix; validates JWT; sets `SecurityContextHolder`; clears context on failure |
+| `SecurityConfig` | `@EnableWebSecurity`; CSRF off; STATELESS sessions; JWT filter before `UsernamePasswordAuthenticationFilter` |
+
+**Authorization rules:**
+| Method | Path | Allowed Roles |
+|---|---|---|
+| `GET` | `/api/v1/patients/**` | `ROLE_ADMIN`, `ROLE_DOCTOR` |
+| `POST` | `/api/v1/patients` | `ROLE_ADMIN` |
+| `PUT` | `/api/v1/patients/**` | `ROLE_ADMIN`, `ROLE_DOCTOR` |
+| `DELETE` | `/api/v1/patients/**` | `ROLE_ADMIN` |
+| ANY | `/actuator/**` | permit all |
+| ANY | everything else | deny all |
+
+Roles are stored in the JWT `roles` claim as `ROLE_ADMIN` / `ROLE_DOCTOR`. No token → `401`. Wrong role → `403`.
+
+**`docker-compose.yml`** — `JWT_SECRET` env var added to `patient-service`.
+
+**Integration tests updated** (`PatientControllerIntegrationTest.java`):
+- `generateTestToken(String role)` helper builds a signed JWT using the injected secret
+- All 11 existing requests now carry `Authorization: Bearer <ADMIN_TOKEN>`
+- New test: `deletePatient_shouldReturn403_whenRoleIsDoctor` — verifies `ROLE_DOCTOR` cannot delete (12 tests total)
+
 ### 16. API Gateway
 **New project: `api-gateway/`**
 - Spring Cloud 2025.0.0 BOM; `spring-cloud-starter-gateway` + `eureka-client` + `actuator`
@@ -189,6 +228,9 @@ Switch profile at runtime: `--spring.profiles.active=prod`
 | API Gateway with routing | ✅ |
 | Gateway Correlation ID filter | ✅ |
 | Docker Compose (all services) | ✅ |
+| JWT Authentication (Spring Security) | ✅ |
+| Role-based access (ADMIN / DOCTOR) | ✅ |
+| Integration tests with auth headers | ✅ |
 
 ---
 
@@ -200,21 +242,37 @@ Switch profile at runtime: `--spring.profiles.active=prod`
 
 ---
 
-### GET all patients
+> All patient endpoints require a valid JWT in the `Authorization: Bearer <token>` header.
+> Obtain a token from your auth server. For local testing, generate one using the JJWT snippet below.
+
+### Generate a test JWT (Java / local testing)
+```java
+Key key = Keys.hmacShaKeyFor("default-secret-key-change-in-production-min-32-chars"
+        .getBytes(StandardCharsets.UTF_8));
+String token = Jwts.builder()
+        .setSubject("testuser")
+        .claim("roles", List.of("ROLE_ADMIN"))
+        .setExpiration(new Date(System.currentTimeMillis() + 86400000L))
+        .signWith(key, SignatureAlgorithm.HS256)
+        .compact();
+```
+
+### GET all patients — `ROLE_ADMIN` or `ROLE_DOCTOR`
 ```bash
 curl -X GET <BASE_URL>/api/v1/patients \
-  -H "Accept: application/json"
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
-### GET patient by ID
+### GET patient by ID — `ROLE_ADMIN` or `ROLE_DOCTOR`
 ```bash
 curl -X GET <BASE_URL>/api/v1/patients/<ID> \
-  -H "Accept: application/json"
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
-### POST create patient
+### POST create patient — `ROLE_ADMIN` only
 ```bash
 curl -X POST <BASE_URL>/api/v1/patients \
+  -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "John Doe",
@@ -224,11 +282,12 @@ curl -X POST <BASE_URL>/api/v1/patients \
     "registerDate": "2024-01-10"
   }'
 ```
-`201 Created` | `400` on invalid/duplicate email
+`201 Created` | `400` invalid/duplicate email | `403` wrong role
 
-### PUT update patient
+### PUT update patient — `ROLE_ADMIN` or `ROLE_DOCTOR`
 ```bash
 curl -X PUT <BASE_URL>/api/v1/patients/<ID> \
+  -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "John Updated",
@@ -237,13 +296,14 @@ curl -X PUT <BASE_URL>/api/v1/patients/<ID> \
     "dateOfBirth": "1990-05-15"
   }'
 ```
-`registerDate` not required on update. `200 OK` | `404` not found | `400` duplicate email
+`registerDate` not required on update. `200 OK` | `404` not found | `403` wrong role
 
-### DELETE patient
+### DELETE patient — `ROLE_ADMIN` only
 ```bash
-curl -X DELETE <BASE_URL>/api/v1/patients/<ID>
+curl -X DELETE <BASE_URL>/api/v1/patients/<ID> \
+  -H "Authorization: Bearer <TOKEN>"
 ```
-`204 No Content` | `404` not found
+`204 No Content` | `404` not found | `403` wrong role
 
 ---
 
@@ -311,9 +371,9 @@ docker compose up --build
 - [ ] **Swagger annotations** — add `@Operation`, `@ApiResponse`, `@Tag` to controller methods
 
 ### Security
-- [ ] **Authentication** — JWT / OAuth2 via Spring Security
-- [ ] **Authorization** — role-based access (ADMIN can delete, DOCTOR can read/update)
-- [ ] **Externalize secrets** — move DB credentials out of yml into env vars or secrets manager
+- [ ] **Externalize secrets** — move DB credentials out of yml into env vars or secrets manager (JWT_SECRET already uses env var)
+- [ ] **JWT gateway enforcement** — validate JWT at the Gateway level so patient-service doesn't need to know about tokens
+- [ ] **Auth service** — dedicated microservice to issue and refresh JWT tokens
 
 ### Testing
 - [ ] **Repository tests** — test custom queries with `@DataJpaTest`
@@ -329,4 +389,5 @@ docker compose up --build
 | `85c3f6b` | Implemented D (delete) in patient service |
 | `a9ff000` | Added Docker and unit test code |
 | `625aab8` | Added API Gateway and Eureka Server |
-| *(current)* | Updated PROGRESS.md — full architecture documented |
+| `1fab572` | docs: update PROGRESS.md with Eureka, API Gateway, full architecture |
+| *(current)* | JWT auth + RBAC; Spring Security; integration tests updated |
