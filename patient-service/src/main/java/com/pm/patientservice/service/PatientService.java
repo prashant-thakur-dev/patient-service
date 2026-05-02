@@ -7,8 +7,6 @@ import com.pm.patientservice.exception.PatientNotFoundException;
 import com.pm.patientservice.mapper.PatientMapper;
 import com.pm.patientservice.model.Patient;
 import com.pm.patientservice.repository.PatientRepository;
-import lombok.NoArgsConstructor;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -30,7 +28,16 @@ public class PatientService {
                 .map(PatientMapper::toDTO).toList();
     }
 
+    public PatientResponseDTO getPatient(UUID id){
+        Patient patient = patientRepository.findById(id).orElseThrow(()-> new PatientNotFoundException("patient not found with id: "+ id));
+        return PatientMapper.toDTO(patient);
+    }
+
     public PatientResponseDTO createPatient(PatientRequestDTO patientRequestDTO){
+        patientRequestDTO.setName(patientRequestDTO.getName().trim());
+        patientRequestDTO.setEmail(patientRequestDTO.getEmail().trim());
+        patientRequestDTO.setAddress(patientRequestDTO.getAddress().trim());
+
         if (patientRepository.existsByEmail(patientRequestDTO.getEmail())){
             throw new EmailAlreadyExistException("Email already exist is database with "+patientRequestDTO.getEmail());
         }
@@ -40,6 +47,10 @@ public class PatientService {
 
     public PatientResponseDTO updatePatient(UUID id, PatientRequestDTO patientRequestDTO){
         Patient patient = patientRepository.findById(id).orElseThrow(()-> new PatientNotFoundException("patient not found with id: "+ id));
+
+        patientRequestDTO.setName(patientRequestDTO.getName().trim());
+        patientRequestDTO.setEmail(patientRequestDTO.getEmail().trim());
+        patientRequestDTO.setAddress(patientRequestDTO.getAddress().trim());
 
         if(patientRepository.existsByEmailAndIdNot(patientRequestDTO.getEmail(),id)){
             throw new EmailAlreadyExistException("Email already exist is database with "+patientRequestDTO.getEmail());
@@ -53,5 +64,12 @@ public class PatientService {
         Patient updatedPatient = patientRepository.save(patient);
 
         return PatientMapper.toDTO(updatedPatient);
+    }
+
+    public void deletePatient(UUID id){
+        if (!patientRepository.existsById(id)){
+            throw new PatientNotFoundException("patient not found with id: " + id);
+        }
+        patientRepository.deleteById(id);
     }
 }
