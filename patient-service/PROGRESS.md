@@ -4,10 +4,30 @@
 
 A **Spring Boot microservice** for managing patient records, part of a larger microservices architecture.
 
-- **Tech Stack:** Java 21, Spring Boot 4.0.0, Spring Data JPA, PostgreSQL (prod), H2 (dev), Lombok, Bean Validation, springdoc-openapi 2.8.6, Actuator
-- **Base URL:** `/api/v1/patients`
+- **Tech Stack:** Java 21, Spring Boot 4.0.0, Spring Data JPA, PostgreSQL (prod), H2 (dev), Lombok, Bean Validation, springdoc-openapi 2.8.6, Actuator, Spring Cloud 2025.0.0
+- **Base URL (local):** `http://localhost:4000/api/v1/patients`
+- **Base URL (via Gateway):** `http://localhost:4004/api/v1/patients`
 - **Group ID / Artifact:** `com.pm` / `patient-service`
-- **Default Port (local):** `4000` | **Docker port:** `8080`
+
+---
+
+## Microservices Architecture Overview
+
+```
+Client
+  │
+  ▼
+api-gateway        :4004   (Spring Cloud Gateway — routes + correlation ID)
+  │
+  ├──► patient-service   :8080 / :4000   (REST API + JPA + PostgreSQL)
+  │
+  └──► [future services]
+
+eureka-server      :8761   (Netflix Eureka — service registry)
+postgres           :5432   (PostgreSQL — patient data)
+```
+
+All services register with Eureka. Gateway routes via `lb://` load-balanced URIs.
 
 ---
 
@@ -15,7 +35,7 @@ A **Spring Boot microservice** for managing patient records, part of a larger mi
 
 ### 1. Project Setup
 - Spring Boot project initialized with Maven (`pom.xml`)
-- Dependencies: `spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-boot-starter-validation`, `postgresql`, `h2`, `lombok`, `spring-boot-devtools`, `springdoc-openapi-starter-webmvc-ui`, `spring-boot-starter-actuator`
+- Dependencies: `spring-boot-starter-web`, `spring-boot-starter-data-jpa`, `spring-boot-starter-validation`, `postgresql`, `h2`, `lombok`, `spring-boot-devtools`, `springdoc-openapi-starter-webmvc-ui`, `spring-boot-starter-actuator`, `spring-cloud-starter-netflix-eureka-client`
 
 ### 2. Domain Model
 **`Patient.java`** — JPA entity with fields:
@@ -87,17 +107,9 @@ Switch profile at runtime: `--spring.profiles.active=prod`
 - Raw OpenAPI JSON: `http://localhost:4000/api-docs`
 
 ### 11. Docker Support
-Three files added to project root:
-
-- **`Dockerfile`** — two-stage build:
-  - Stage 1 (`builder`): `maven:3.9.6-eclipse-temurin-21` → `mvn clean package -DskipTests`
-  - Stage 2 (`runtime`): `eclipse-temurin:21-jre-alpine` → copies jar, exposes `8080`
-- **`docker-compose.yml`** — two services:
-  - `postgres` (`postgres:16-alpine`) with healthcheck via `pg_isready`
-  - `patient-service` depends on postgres (`service_healthy`), overrides datasource URL/credentials via env vars
-- **`.dockerignore`** — excludes `target/`, `.git/`, `*.md`, `.mvn/`, `mvnw`, `mvnw.cmd`
-
-Run everything: `docker compose up --build`
+- **`patient-service/Dockerfile`** — two-stage build; `eclipse-temurin:21-jre-alpine`; exposes `8080`
+- **`patient-service/.dockerignore`** — excludes `target/`, `.git/`, `*.md`, `.mvn/`, `mvnw`
+- **`docker-compose.yml`** moved to microservice root (sibling of all service folders)
 
 ### 12. Unit Tests
 **`PatientServiceTest.java`** — 10 tests using JUnit 5 + Mockito (`@ExtendWith(MockitoExtension.class)`):
@@ -112,15 +124,44 @@ Run everything: `docker compose up --build`
 - Covers all 5 endpoints, happy paths and error cases
 
 ### 14. Actuator & Structured Logging
-- **`spring-boot-starter-actuator`** added to `pom.xml`
-- Actuator endpoints exposed: `/actuator/health`, `/actuator/info`, `/actuator/metrics` (full health details always shown)
+- **`spring-boot-starter-actuator`** added; endpoints: `/actuator/health`, `/actuator/info`, `/actuator/metrics`
 - `info.app` block in `application.yml`: name, version, description
 - **`CorrelationIdFilter.java`** (`OncePerRequestFilter`):
-  - Reads `X-Correlation-ID` request header (or generates a UUID if absent)
-  - Puts correlation ID into MDC key `correlationId`
-  - Echoes it back in `X-Correlation-ID` response header
-  - Always calls `MDC.clear()` in `finally`
+  - Reads or generates `X-Correlation-ID`; puts into MDC key `correlationId`; echoes in response header; clears MDC in `finally`
 - Log pattern (both profiles): `%d{yyyy-MM-dd HH:mm:ss} [%thread] [correlationId=%X{correlationId}] %-5level %logger{36} - %msg%n`
+
+### 15. Eureka Service Discovery
+**New project: `eureka-server/`**
+- Spring Cloud 2025.0.0 BOM; `spring-cloud-starter-netflix-eureka-server`
+- `@EnableEurekaServer` on `EurekaServerApplication.java`
+- Runs on port `8761`; self-registration disabled; zero sync wait for fast startup
+- `eureka-server/Dockerfile` — two-stage build; `apk add curl` (required for docker healthcheck); exposes `8761`
+
+**patient-service changes:**
+- Added Spring Cloud 2025.0.0 BOM to `<dependencyManagement>`
+- Added `spring-cloud-starter-netflix-eureka-client` dependency
+- `application.yml` — added `eureka.client.service-url.defaultZone` + `prefer-ip-address: true`
+- In Docker: `EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://eureka-server:8761/eureka/`
+
+### 16. API Gateway
+**New project: `api-gateway/`**
+- Spring Cloud 2025.0.0 BOM; `spring-cloud-starter-gateway` + `eureka-client` + `actuator`
+- Plain `@SpringBootApplication` — gateway auto-configures via Spring Cloud
+- Runs on port `4004`
+- Routes: `lb://patientservice` on path `/api/v1/patients/**` (load-balanced via Eureka)
+- Discovery locator enabled — services auto-discoverable by name
+- **`CorrelationIdGatewayFilter.java`** (`GlobalFilter`, `Ordered.HIGHEST_PRECEDENCE`):
+  - Reactive (WebFlux) — uses `ServerWebExchange` / `Mono`
+  - Reads or generates `X-Correlation-ID`; mutates downstream request headers; appends to response
+- `api-gateway/Dockerfile` — two-stage build; `apk add curl`; exposes `4004`
+
+**Root `docker-compose.yml`** (at `microservice/` level — tracks all services):
+| Service | Image / Build | Port | Depends On |
+|---|---|---|---|
+| `postgres` | `postgres:16-alpine` | `5432` | — |
+| `eureka-server` | `./eureka-server` | `8761` | — |
+| `api-gateway` | `./api-gateway` | `4004` | `eureka-server` healthy |
+| `patient-service` | `./patient-service` | `8080` | `postgres` + `eureka-server` healthy |
 
 ---
 
@@ -138,20 +179,24 @@ Run everything: `docker compose up --build`
 | 404 on PatientNotFound | ✅ |
 | Multi-profile YAML config | ✅ |
 | OpenAPI / Swagger UI | ✅ |
-| Dockerfile + docker-compose | ✅ |
+| Dockerfile (patient-service) | ✅ |
 | Unit tests (PatientService) | ✅ |
 | Integration tests (Controller) | ✅ |
 | Actuator endpoints | ✅ |
 | Correlation ID filter + MDC logging | ✅ |
+| Eureka Server | ✅ |
+| Eureka Client (patient-service) | ✅ |
+| API Gateway with routing | ✅ |
+| Gateway Correlation ID filter | ✅ |
+| Docker Compose (all services) | ✅ |
 
 ---
 
 ## API Endpoint Reference
 
-> Local base URL: `http://localhost:4000`  
-> Docker base URL: `http://localhost:8080`  
-> Replace `<BASE_URL>` below with whichever applies.  
-> Replace `<ID>` with a real patient UUID.
+> **Local (direct):** `http://localhost:4000`
+> **Via Gateway:** `http://localhost:4004`
+> Replace `<BASE_URL>` with either. Replace `<ID>` with a real patient UUID.
 
 ---
 
@@ -161,15 +206,11 @@ curl -X GET <BASE_URL>/api/v1/patients \
   -H "Accept: application/json"
 ```
 
----
-
 ### GET patient by ID
 ```bash
 curl -X GET <BASE_URL>/api/v1/patients/<ID> \
   -H "Accept: application/json"
 ```
-
----
 
 ### POST create patient
 ```bash
@@ -183,11 +224,7 @@ curl -X POST <BASE_URL>/api/v1/patients \
     "registerDate": "2024-01-10"
   }'
 ```
-**Response:** `201 Created`  
-**Validation errors:** `400 Bad Request` (missing/invalid fields)  
-**Duplicate email:** `400 Bad Request`
-
----
+`201 Created` | `400` on invalid/duplicate email
 
 ### PUT update patient
 ```bash
@@ -200,20 +237,13 @@ curl -X PUT <BASE_URL>/api/v1/patients/<ID> \
     "dateOfBirth": "1990-05-15"
   }'
 ```
-> Note: `registerDate` is NOT required on update.  
-
-**Response:** `200 OK`  
-**Not found:** `404 Not Found`  
-**Duplicate email:** `400 Bad Request`
-
----
+`registerDate` not required on update. `200 OK` | `404` not found | `400` duplicate email
 
 ### DELETE patient
 ```bash
 curl -X DELETE <BASE_URL>/api/v1/patients/<ID>
 ```
-**Response:** `204 No Content`  
-**Not found:** `404 Not Found`
+`204 No Content` | `404` not found
 
 ---
 
@@ -227,59 +257,67 @@ http://localhost:4000/swagger-ui.html
 curl http://localhost:4000/api-docs
 ```
 
----
+### Eureka Dashboard
+```
+http://localhost:8761
+```
 
-### Actuator endpoints
+### Actuator (patient-service)
 ```bash
-# Health check
 curl http://localhost:4000/actuator/health
-
-# App info
 curl http://localhost:4000/actuator/info
-
-# Metrics list
 curl http://localhost:4000/actuator/metrics
-
-# Specific metric (e.g. JVM memory)
 curl http://localhost:4000/actuator/metrics/jvm.memory.used
 ```
 
----
-
-### Using X-Correlation-ID header
-Pass a correlation ID to trace a request across logs:
+### Actuator (api-gateway)
 ```bash
-curl -X GET <BASE_URL>/api/v1/patients \
-  -H "X-Correlation-ID: my-trace-id-001"
+curl http://localhost:4004/actuator/health
 ```
-The same ID will be returned in the response header and printed in every log line for that request.
+
+### X-Correlation-ID (end-to-end tracing)
+```bash
+# Gateway generates one automatically if not supplied
+curl -X GET http://localhost:4004/api/v1/patients \
+  -H "X-Correlation-ID: my-trace-id-001"
+# Same ID flows through gateway → patient-service logs
+```
+
+### Run everything with Docker
+```bash
+# from D:\certificate\neeT\video_material\microservice\
+docker compose up --build
+
+# Eureka dashboard  → http://localhost:8761
+# API Gateway       → http://localhost:4004/api/v1/patients
+# patient-service   → http://localhost:8080/api/v1/patients  (direct)
+```
 
 ---
 
 ## What Can Be Done Next
 
 ### Architecture / Microservices
-- [ ] **Service Discovery** — register with Eureka or Consul
-- [ ] **API Gateway** — route requests through Spring Cloud Gateway
-- [ ] **Inter-service communication** — add OpenFeign clients (e.g., appointment-service, billing-service)
+- [ ] **Inter-service communication** — add OpenFeign clients to call other services (e.g., appointment-service, billing-service)
 - [ ] **Config Server** — externalize configuration via Spring Cloud Config
 
 ### Resilience & Observability
-- [ ] **Circuit Breaker** — Resilience4j for fault tolerance on inter-service calls
-- [ ] **Distributed Tracing** — Micrometer + Zipkin/Jaeger
-- [ ] **Metrics scraping** — expose Prometheus-format metrics via Actuator + Micrometer
+- [ ] **Circuit Breaker** — Resilience4j on inter-service calls
+- [ ] **Distributed Tracing** — Micrometer + Zipkin/Jaeger (end-to-end trace with correlation ID)
+- [ ] **Metrics scraping** — Prometheus format via Actuator + Micrometer
 
 ### API Improvements
-- [ ] **Pagination & Sorting** — replace `findAll()` with `findAll(Pageable)` for large datasets
+- [ ] **Pagination & Sorting** — replace `findAll()` with `findAll(Pageable)`
 - [ ] **Swagger annotations** — add `@Operation`, `@ApiResponse`, `@Tag` to controller methods
 
 ### Security
-- [ ] **Authentication** — secure endpoints with JWT / OAuth2 (Spring Security)
-- [ ] **Authorization** — role-based access (e.g., ADMIN can delete, DOCTOR can read/update)
-- [ ] **Externalize secrets** — move DB password out of `application-prod.yml` into env vars or a secrets manager
+- [ ] **Authentication** — JWT / OAuth2 via Spring Security
+- [ ] **Authorization** — role-based access (ADMIN can delete, DOCTOR can read/update)
+- [ ] **Externalize secrets** — move DB credentials out of yml into env vars or secrets manager
 
 ### Testing
 - [ ] **Repository tests** — test custom queries with `@DataJpaTest`
+- [ ] **Gateway filter tests** — test `CorrelationIdGatewayFilter` with `WebTestClient`
 
 ---
 
@@ -288,6 +326,7 @@ The same ID will be returned in the response header and printed in every log lin
 | Commit | Description |
 |---|---|
 | `09d8e5c` | CRU Operation only D is remaining in patient service |
-| *(session 1)* | Full CRUD; GET by ID; 404 fix; registerDate in response; input sanitization |
-| *(session 2)* | Multi-profile YAML; OpenAPI/Swagger; Docker support |
-| *(session 3)* | Unit tests; Integration tests; POST returns 201; Actuator; Correlation ID filter |
+| `85c3f6b` | Implemented D (delete) in patient service |
+| `a9ff000` | Added Docker and unit test code |
+| `625aab8` | Added API Gateway and Eureka Server |
+| *(current)* | Updated PROGRESS.md — full architecture documented |
