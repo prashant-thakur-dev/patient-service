@@ -182,6 +182,27 @@ Roles are stored in the JWT `roles` claim as `ROLE_ADMIN` / `ROLE_DOCTOR`. No to
 - All 11 existing requests now carry `Authorization: Bearer <ADMIN_TOKEN>`
 - New test: `deletePatient_shouldReturn403_whenRoleIsDoctor` — verifies `ROLE_DOCTOR` cannot delete (12 tests total)
 
+### 18. Security Bug Fixes
+
+Two bugs found after initial JWT implementation and fixed:
+
+**Bug 1 — `JwtAuthenticationFilter` double-registration:**
+- **Problem:** `JwtAuthenticationFilter` had `@Component`, causing Spring Boot to auto-register it as a servlet filter. `SecurityConfig` also called `addFilterBefore(...)`, so every request ran the filter twice, leading to duplicate authentication attempts.
+- **Fix:** Removed `@Component` from `JwtAuthenticationFilter`. Declared it as a `@Bean` inside `SecurityConfig` instead. `SecurityConfig` now injects `JwtUtil` (not the filter), constructs the filter bean itself, and passes it to `addFilterBefore`.
+
+**Bug 2 — Wrong test dependencies:**
+- **Problem:** `pom.xml` had non-standard starters (`spring-boot-starter-webmvc-test` etc.) that don't include `spring-boot-test-autoconfigure`, causing `@AutoConfigureMockMvc` to fail to resolve.
+- **Fix:** Replaced all non-standard test starters with `spring-boot-starter-test` (scope `test`) + `spring-security-test` (scope `test`). These are the standard Spring Boot test dependencies.
+
+**Files changed:**
+| File | Change |
+|---|---|
+| `JwtAuthenticationFilter.java` | Removed `@Component` annotation |
+| `SecurityConfig.java` | Inject `JwtUtil`; declare filter as `@Bean`; call `jwtAuthenticationFilter()` in `addFilterBefore` |
+| `pom.xml` | Replaced custom test starters → `spring-boot-starter-test` + `spring-security-test` |
+
+---
+
 ### 16. API Gateway
 **New project: `api-gateway/`**
 - Spring Cloud 2025.0.0 BOM; `spring-cloud-starter-gateway` + `eureka-client` + `actuator`
@@ -390,4 +411,5 @@ docker compose up --build
 | `a9ff000` | Added Docker and unit test code |
 | `625aab8` | Added API Gateway and Eureka Server |
 | `1fab572` | docs: update PROGRESS.md with Eureka, API Gateway, full architecture |
-| *(current)* | JWT auth + RBAC; Spring Security; integration tests updated |
+| *(prev)* | JWT auth + RBAC; Spring Security; integration tests updated |
+| *(current)* | Fix JWT filter double-registration; fix test dependencies |
