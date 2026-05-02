@@ -17,3 +17,5 @@ spring:
 logging:
   level:
     root: debug
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] [correlationId=%X{correlationId}] %-5level %logger{36} - %msg%n"

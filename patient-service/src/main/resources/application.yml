@@ -15,6 +15,28 @@ springdoc:
     try-it-out-enabled: true
     operations-sorter: method
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+info:
+  app:
+    name: patient-service
+    version: 1.0.0
+    description: Patient management microservice
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
 logging:
   level:
     root: info
